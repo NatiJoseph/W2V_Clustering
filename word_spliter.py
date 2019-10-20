@@ -3,6 +3,7 @@ from typing import Set, Dict, Any
 import multiprocessing
 from nltk.corpus import brown, webtext, stopwords
 from gensim.models import Word2Vec
+from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 import numpy as np
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
@@ -13,9 +14,9 @@ import sys
 import time
 
 
-WORD2VEC_WINDOW_SIZE = 10
-WORD2VEC_MIN_COUNT = 5
-WORD2VEC_VECTOR_SIZE = 150
+WORD2VEC_WINDOW_SIZE = 5
+WORD2VEC_MIN_COUNT = 10
+WORD2VEC_VECTOR_SIZE = 100
 stopWords = set(stopwords.words('english'))
 
 
@@ -32,25 +33,42 @@ def cluster_word2vec_vectors(word_vector_array):
     optics_model = OPTICS(min_samples=3)
     optics_model.fit(word_vector_array)   # training the model
     clusters_avg_vectors = []
-    for cluster in optics_model.cluster_hierarchy_:
-        avg_vector = np.zeros(WORD2VEC_VECTOR_SIZE)
-        for vector_i in cluster:
-            avg_vector = avg_vector + word_vector_array[vector_i]
-        avg_vector = avg_vector / len(cluster)  # getting the avg of all the vectors in the cluster.
-        clusters_avg_vectors.append(avg_vector)
-    return clusters_avg_vectors
+    clusters_avg_vectors_num = []
+    # for cluster in optics_model.cluster_hierarchy_:
+    #     print(cluster)
+    #     avg_vector = np.zeros(WORD2VEC_VECTOR_SIZE)
+    #     for vector_i in cluster:
+    #         avg_vector = avg_vector + word_vector_array[vector_i]
+    #     avg_vector = avg_vector / len(cluster)  # getting the avg of all the vectors in the cluster.
+    #     clusters_avg_vectors.append(avg_vector)
+    for i in range(max(optics_model.labels_) + 1):
+        clusters_avg_vectors.append(np.zeros(WORD2VEC_VECTOR_SIZE))
+        clusters_avg_vectors_num.append(0)
+    for i, cluster_i in enumerate(optics_model.labels_):
+        if cluster_i == -1:
+            continue
+        clusters_avg_vectors[cluster_i] = clusters_avg_vectors[cluster_i] + word_vector_array[i]
+        clusters_avg_vectors_num[cluster_i] = clusters_avg_vectors_num[cluster_i] + 1
+    clusters_avg_vectors_final = []
+    for vec_i, vec in enumerate(clusters_avg_vectors):
+        if clusters_avg_vectors_num[vec_i] > 0:
+            clusters_avg_vectors_final.append(clusters_avg_vectors[vec_i] / clusters_avg_vectors_num[vec_i])
+    return clusters_avg_vectors_final
 
 
 # This function returns the index of the closest vector to 'vector' from 'vector_group' in string format
 def closest_vector(vector, vector_group):
     from scipy import spatial
     tree = spatial.KDTree(vector_group)
-    return str(tree.query(vector))
+    dist, index = tree.query(vector)
+    return str(index)
 
 
 # This function returns a trained Word2Vec classifier.
 # and a the list of words in the corpus not including stopwords.
-def word2vec_feat(corpus):
+# We found out that because of the clustering process we are losing a lot of words to the min_count parameter, we
+# decided that we have to lower the min_count after the clustering process.
+def word2vec_feat(corpus, post_clustering=False):
     sentences_list = []
     bar_max = len(corpus)
     bar = pyprind.ProgBar(bar_max, title='Creating Word2Vec Model', stream=sys.stdout, width=90)
@@ -63,8 +81,9 @@ def word2vec_feat(corpus):
         sentences_list.append(lowered_sent)
         bar.update()
     cores = multiprocessing.cpu_count()
-    w2v_model = Word2Vec(min_count=WORD2VEC_MIN_COUNT, window=WORD2VEC_WINDOW_SIZE, sample=6e-5, alpha=0.03,
-                         min_alpha=0.0007, negative=20, workers=cores - 1, size=WORD2VEC_VECTOR_SIZE)
+    w2v_min_count = int(WORD2VEC_MIN_COUNT / 4) + 1 if post_clustering else WORD2VEC_MIN_COUNT
+    w2v_model = Word2Vec(min_count=w2v_min_count, window=WORD2VEC_WINDOW_SIZE, sample=6e-5, alpha=0.03,
+                         min_alpha=0.0007, negative=20, workers=cores-1, size=WORD2VEC_VECTOR_SIZE)
     w2v_model.build_vocab(sentences_list)
     w2v_model.train(sentences_list, total_examples=w2v_model.corpus_count, epochs=30)
     # w2v_model.init_sims(replace=True)  # makes the vocabulary memory efficient.
@@ -72,11 +91,21 @@ def word2vec_feat(corpus):
     return w2v_model
 
 
+# This function returns a trained Doc2Vec classifier.
+def doc2vec_feat(corpus, post_clustering=False):
+    documents = [TaggedDocument(doc, [i]) for i, doc in enumerate(corpus)]
+    cores = multiprocessing.cpu_count()
+    d2v_min_count = int(WORD2VEC_MIN_COUNT / 4) + 1 if post_clustering else WORD2VEC_MIN_COUNT
+    d2v_vec_size = WORD2VEC_VECTOR_SIZE     # / 3
+    d2v_model = Doc2Vec(documents, vector_size=d2v_vec_size, window=WORD2VEC_WINDOW_SIZE, min_count=d2v_min_count,
+                        workers=cores-1)
+    return d2v_model
+
+
 class WordSplitter:
     def __init__(self, corpus):
         sentences_list = []
-        bar_max = 2 * len(corpus)
-        bar = pyprind.ProgBar(bar_max, title='Processing corpus', stream=sys.stdout, width=90)
+        print("INIT WORD SPLITTER STARTED")
         for sent in corpus:
             lowered_sent = []
             for w in sent:
@@ -84,8 +113,28 @@ class WordSplitter:
                     continue
                 lowered_sent.append(w.lower())
             sentences_list.append(lowered_sent)
-            bar.update()
         self.corpus = sentences_list
+        self.word_counters = self.__create_corpus_word_counters()
+        w2v_m = word2vec_feat(self.corpus)
+        self.word2vec_model = w2v_m
+        # doc2vec processing
+        d2v_m = doc2vec_feat(self.corpus)
+        self.d2v_model = d2v_m
+        word2sentences, sentence2vector = self.__create_corpus_mapping()
+        self.__word2sentences = word2sentences
+        self.__sentence2vector = sentence2vector
+        w2p_vec_dict = self.__create_cluster_vectors()
+        self.word2split_vec_dict = w2p_vec_dict
+        n_corpus = self.create_new_language_corpus()
+        self.new_corpus = n_corpus
+        n_word2vec_model = self.create_new_language_w2v()
+        self.new_w2v_model = n_word2vec_model
+        n_d2v_model = doc2vec_feat(self.new_corpus)
+        self.new_d2v_model = n_d2v_model
+        print("INIT WORD SPLITTER ENDED")
+
+    # This function creates a dictionary that contains the number of times each word appears in the corpus.
+    def __create_corpus_word_counters(self):
         word_counters = dict()
         for sentence_index, sentence in enumerate(self.corpus):
             for w in sentence:
@@ -95,15 +144,7 @@ class WordSplitter:
                     word_counters[w] = 1
                 else:
                     word_counters[w] = word_counters[w] + 1
-            bar.update()
-        self.word_counters = word_counters
-        w2v_m = word2vec_feat(self.corpus)
-        self.word2vec_model = w2v_m
-        word2sentences, sentence2vector = self.__create_corpus_mapping()
-        self.__word2sentences = word2sentences
-        self.__sentence2vector = sentence2vector
-        self.new_corpus = None
-        self.new_w2v_model = None
+        return word_counters
 
     # This is a pre-processing function. It is used to create a mapping between every word in the corpus to the
     # sentences it appears in and also creates a word2vec vector for each sentence in the corpus.
@@ -121,20 +162,16 @@ class WordSplitter:
             wor = w
         for sentence_index, sentence in enumerate(self.corpus):
             bar.update()
-            # print("processing corpus mapping for sentence number " + str(sentence_index) + ":"
-            # + str(len(self.corpus)))
-            sentence_vector = np.zeros(WORD2VEC_VECTOR_SIZE)
             for w in sentence:
                 if w in stopWords:
                     continue
                 if self.word_counters[w] < WORD2VEC_MIN_COUNT:
                     continue
-                sentence_vector = sentence_vector + np.array(word2vec_model[w])
                 if w not in word2sentences:
                     word2sentences[w] = {sentence_index}
                 else:
                     word2sentences[w].add(sentence_index)
-            sentence2vector.append(sentence_vector)
+            sentence2vector.append(self.d2v_model.docvecs[sentence_index])
         return word2sentences, sentence2vector
 
     # This function is used to find the center of each different representation on a word's cluster.
@@ -143,10 +180,8 @@ class WordSplitter:
         bar_max = len(self.__word2sentences)
         bar = pyprind.ProgBar(bar_max, title='Clustering Word Vectors', stream=sys.stdout, width=90)
         word2split_vec_dict = dict()
-        # counter = 0
         for word in self.__word2sentences:
             bar.update()
-            # counter = counter + 1
             if word in stopWords:
                 continue
             if self.word_counters[word] < WORD2VEC_MIN_COUNT:
@@ -160,62 +195,72 @@ class WordSplitter:
             # print(str(len(word_vector_array)))
             # print(self.word_counters[word])
             word2split_vec_dict[word] = cluster_word2vec_vectors(word_vector_array)
-            # print(str(counter) + "/" + str(len(self.__word2sentences)) + " | " + "appearances to clusters for " + word
-            #       + " :\t\t\t" + str(len(word_vector_array)) + " : " + str(len(word2split_vec_dict[word])))
         return word2split_vec_dict
-
-    # This function creates a new corpus in which the words have extensions according to the cluster they belong to.
-    # def create_new_language_corpus(self):
-    #     new_language_corpus = []
-    #     w2v_model = self.word2vec_model
-    #     word2split_vec_dict = self.__create_cluster_vectors()
-    #     bar_max = len(self.corpus)
-    #     bar = pyprind.ProgBar(bar_max, title='Creating New Language', stream=sys.stdout, width=90)
-    #     for sentence_index, sentence in enumerate(self.corpus):
-    #         # print("processing corpus mapping for sentence number " + str(sentence_index) + ":" +
-    #         # str(len(self.corpus)))
-    #         new_language_sentence = []
-    #         for w in sentence:
-    #             if w in stopWords:
-    #                 continue
-    #             if self.word_counters[w] < WORD2VEC_MIN_COUNT:
-    #                 continue
-    #             if w not in word2split_vec_dict:
-    #                 continue
-    #             word_w2v_vector = np.array(w2v_model[w])
-    #             word_cluster_vectors = word2split_vec_dict[w]
-    #             new_language_word = w + '_' + closest_vector(word_w2v_vector, word_cluster_vectors)
-    #             new_language_sentence.append(new_language_word)
-    #         new_language_corpus.append(new_language_sentence)
-    #         bar.update()
-    #     self.new_corpus = new_language_corpus
-    #     return new_language_corpus
 
     # This function creates a new W2V model according to the new language we created.
     def create_new_language_w2v(self):
-        new_language_word2vec_model = word2vec_feat(self.new_corpus)
-        self.new_w2v_model = new_language_word2vec_model
+        new_language_word2vec_model = word2vec_feat(self.new_corpus, post_clustering=True)
         return new_language_word2vec_model
+
+    # This function creates a new corpus according to the new language we created.
+    def create_new_language_corpus(self):
+        n_corpus = self.classify(self.corpus)
+        return n_corpus
+
+    # This function gets as input a word in the old language and returns the number of words created from that word
+    # in the new language and the most similar word to it in the new language.
+    def get_new_words(self, old_word):
+        word2split_vec_dict = self.word2split_vec_dict
+        new_w2v_model = self.new_w2v_model
+        if old_word not in word2split_vec_dict:
+            if old_word not in self.word_counters:
+                print("ERROR: word " + str(old_word) + " doesn't exist in corpus")
+                return old_word, None
+            else:
+                most_similar_word = new_w2v_model.wv.most_similar(positive=old_word, topn=1)
+                most_similar_word = most_similar_word[0]
+                most_similar_word = most_similar_word[0]
+                return old_word, most_similar_word
+        new_words = []
+        print("The word " + old_word + " appears " + str(self.word_counters[old_word]) + " times in old corpus")
+        print("The word " + old_word + " has " + str(len(self.word2split_vec_dict[old_word])) + " meanings")
+        for word_index, word_vector in enumerate(word2split_vec_dict[old_word]):
+            new_word = old_word + '_' + str(word_index)
+            if new_word not in new_w2v_model.wv.vocab:
+                continue
+            most_similar_word = new_w2v_model.wv.most_similar(positive=new_word, topn=1)
+            most_similar_word = most_similar_word[0]
+            most_similar_word = most_similar_word[0]
+            tup = new_word, most_similar_word
+            new_words.append(tup)
+        if len(new_words) == 0:
+            print("no new words")
+            most_similar_word = new_w2v_model.wv.most_similar(positive=old_word, topn=1)
+            most_similar_word = most_similar_word[0]
+            most_similar_word = most_similar_word[0]
+            return old_word, most_similar_word
+        return new_words
 
     # This function gets as input text in the old language and returns text in the new language.
     def classify(self, text):
         new_language_text = []
-        w2v_model = self.word2vec_model
-        word2split_vec_dict = self.__create_cluster_vectors()
-        bar_max = len(self.corpus)
+        d2v_model = self.d2v_model
+        word2split_vec_dict = self.word2split_vec_dict
+        bar_max = len(text)
         bar = pyprind.ProgBar(bar_max, title='Changing old language to new language', stream=sys.stdout, width=90)
         for sentence_index, sentence in enumerate(text):
             new_language_sentence = []
+            sentence_d2v_vector = np.array(d2v_model.docvecs[sentence_index])
             for w in sentence:
                 if w in stopWords:
                     continue
                 if self.word_counters[w] < WORD2VEC_MIN_COUNT:
                     continue
                 if w not in word2split_vec_dict:
-                    continue
-                word_w2v_vector = np.array(w2v_model[w])
-                word_cluster_vectors = word2split_vec_dict[w]
-                new_language_word = w + '_' + closest_vector(word_w2v_vector, word_cluster_vectors)
+                    new_language_word = w
+                else:
+                    word_cluster_vectors = word2split_vec_dict[w]
+                    new_language_word = w + '_' + str(closest_vector(sentence_d2v_vector, word_cluster_vectors))
                 new_language_sentence.append(new_language_word)
             new_language_text.append(new_language_sentence)
             bar.update()
