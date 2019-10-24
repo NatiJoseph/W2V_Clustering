@@ -1,54 +1,83 @@
 from word_spliter import *
+from Text_Processing import text_to_list_of_lists
 import pickle
 from termcolor import colored
 # pickle.dump(model_accuracy, open('accuracy for ' + INFERENCE_FILE_NAME + TRAIN_FILE_NAME + W_FILE, 'wb'))
 # model_accuracy = pickle.load(open('accuracy for ' + INFERENCE_FILE_NAME + TRAIN_FILE_NAME + W_FILE, "rb"))
 
+
 if __name__ == '__main__':
+    brown_corpus = brown.sents()
+    webtext_corpus = webtext.sents()
+    wikipedia_mouse_corpus = text_to_list_of_lists('wikipedia-mouse.txt')
+    from nltk.corpus import gutenberg
+    books = ['austen-emma.txt', 'austen-persuasion.txt', 'austen-sense.txt', 'bible-kjv.txt', 'blake-poems.txt',
+             'bryant-stories.txt', 'burgess-busterbrown.txt', 'carroll-alice.txt', 'chesterton-ball.txt',
+             'chesterton-brown.txt','chesterton-thursday.txt', 'edgeworth-parents.txt', 'melville-moby_dick.txt',
+             'milton-paradise.txt', 'shakespeare-caesar.txt', 'shakespeare-hamlet.txt','shakespeare-macbeth.txt',
+             'whitman-leaves.txt']
+    gutenberg_corpus = []
+    for book in books:
+        gutenberg_corpus += list(gutenberg.sents(book))
+    print(len(gutenberg_corpus))
+
+    mega_corpus = []
+    for sent in brown_corpus:
+        mega_corpus += list(sent)
+    for sent in webtext_corpus:
+        mega_corpus += list(sent)
+    for sent in wikipedia_mouse_corpus:
+        mega_corpus += list(sent)
+    for sent in gutenberg_corpus:
+        mega_corpus += list(sent)
+
     print("Hello,\n"
           "Welcome to the Word Splitting Program.\n",
           colored('Please type the number of the answer.', 'blue'))
-    print("Would you like to update the Brown corpus and the english language stop-words?")
-    answer_1 = int(input("1. Yes\t2. No\n"))
+    # print("Would you like to update the corpora and the english language stop-words?")
+    answer_1 = 0    # answer_1 = int(input("1. Yes\t2. No\n"))
+    print("Which corpus would you like to use?")
+    answer_3 = int(input("1. Wikipedia-mouse-testing\t2. Webtext\t3. Brown\t4. Gutenberg\t5. All\n"))
     print("Would you like to like to create a new word_splitter instance?")
     answer_2 = int(input("1. Yes\t2. No\n"))
-    print("Would you like to like to create a new language?")
-    answer_3 = int(input("1. Yes\t2. No\n"))
-    print("Would you like to like to create a new Word2Vec model for the new language corpus?")
-    answer_4 = int(input("1. Yes\t2. No\n"))
     print("Would you like to check for similar words from the new language corpus?")
     answer_5 = int(input("1. Yes\t2. No\n"))
+
     if answer_1 == 1:
-        nltk.download('brown')
-        nltk.download('stopwords')
-    # from nltk.corpus import brown
-    # print('Start')
-    # print(stopWords)
-    # print(brown_corpus)
-    brown_corpus = brown.sents()
+        import nltk
+        nltk.download()
+
+    if answer_3 == 1:
+        using_corpus = '_wikipedia_mouse'
+        corpus_ = wikipedia_mouse_corpus
+    elif answer_3 == 2:
+        using_corpus = '_webtext'
+        corpus_ = webtext_corpus
+    elif answer_3 == 3:
+        using_corpus = '_brown'
+        corpus_ = brown_corpus
+    elif answer_3 == 4:
+        using_corpus = '_gutenberg'
+        corpus_ = gutenberg_corpus
+    elif answer_3 == 5:
+        using_corpus = '_all'
+        corpus_ = mega_corpus
+
     if answer_2 == 1:
-        word_splitter = WordSplitter(corpus=brown_corpus)
-        pickle.dump(word_splitter, open('word_splitter_instance', 'wb'))
+        word_splitter = WordSplitter(corpus=corpus_)
+        pickle.dump(word_splitter, open('word_splitter_instance' + using_corpus, 'wb'))
         print("#### word_splitter_instance Saved Successfully ####")
     else:
-        word_splitter = pickle.load(open('word_splitter_instance', "rb"))
+        word_splitter = pickle.load(open('word_splitter_instance' + using_corpus, "rb"))
         print("#### word_splitter_instance Loaded Successfully ####")
-    old_word2vec_model = word_splitter.word2vec_model
-    if answer_3 == 1:
-        new_corpus = word_splitter.create_new_language_corpus()
-        pickle.dump(new_corpus, open('new_language_corpus', 'wb'))
-        print("#### new_language_corpus Saved Successfully ####")
-    else:
-        new_corpus = pickle.load(open('new_language_corpus', "rb"))
-        print("#### new_language_corpus Loaded Successfully ####")
 
-    if answer_4 == 1:
-        new_word2vec_model = word_splitter.create_new_language_w2v()
-        pickle.dump(new_word2vec_model, open('new_language_word2vec_model', 'wb'))
-        print("#### new_language_word2vec_model Saved Successfully ####")
-    else:
-        new_word2vec_model = pickle.load(open('new_language_word2vec_model', "rb"))
-        print("#### new_language_word2vec_model Loaded Successfully ####")
+    old_word2vec_model = word_splitter.word2vec_model
+    new_corpus = word_splitter.create_new_language_corpus()
+    print("#### new_language_corpus Loaded Successfully ####")
+    new_word2vec_model = word_splitter.create_new_language_w2v()
+    print("#### new_language_word2vec_model Loaded Successfully ####")
+    print_dictionary_to_excel(word_splitter, using_corpus)
+    print_canonic_words_to_excel(word_splitter, using_corpus)
 
     while answer_5 == 1:
         answer_word = str(input("Enter word:\t")).lower()
