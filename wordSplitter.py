@@ -494,7 +494,6 @@ def create_even_clusters_mp(vector_size=256, clustering_factor=7, pca_var=0.85, 
         return "None", "None"
     else:
         for canonic_word in given_args.keys():  # only one key in dictionary
-            # logger.info("CLUSTERING WORKER: clustering word %s with %i sampled vectors ", canonic_word, len(given_args[canonic_word]))
             start_time = time.time()
             cluster_vectors = get_clusters_vectors(given_args[canonic_word], vector_size, clustering_factor, pca_var)
             if len(cluster_vectors) > 1:
